@@ -1,12 +1,15 @@
 import hashlib
 import time
 import json
+import requests
 from flask import Flask, jsonify, request
+from threading import Thread
 
-# Blockchain class
 class Blockchain:
     def __init__(self):
         self.chain = []
+        self.transactions = []
+        self.peers = set()
         self.create_block(transactions="Genesis Block", previous_hash='0', fees=0)
 
     def create_block(self, transactions, previous_hash, fees):
@@ -32,7 +35,6 @@ class Blockchain:
     def is_chain_valid(self, chain):
         previous_block = chain[0]
         block_index = 1
-
         while block_index < len(chain):
             block = chain[block_index]
             if block['previous_hash'] != self.hash_block(previous_block):
@@ -41,10 +43,23 @@ class Blockchain:
             block_index += 1
         return True
 
-# Flask web app setup
-app = Flask(__name__)
+    def add_peer(self, peer):
+        self.peers.add(peer)
+
+    def sync_chain(self):
+        for peer in self.peers:
+            try:
+                response = requests.get(f'http://{peer}/chain')
+                if response.status_code == 200:
+                    peer_chain = response.json()['chain']
+                    if len(peer_chain) > len(self.chain) and self.is_chain_valid(peer_chain):
+                        self.chain = peer_chain
+            except requests.exceptions.RequestException as e:
+                print(f"Failed to connect to peer {peer}: {e}")
 
 blockchain = Blockchain()
+
+app = Flask(__name__)
 
 # Automatic mining every 6 seconds
 def mine_automatically():
@@ -59,7 +74,7 @@ def mine_automatically():
         print(f"Block mined: {new_block}")
         time.sleep(6)
 
-# Route to get the blockchain
+# Routes
 @app.route('/chain', methods=['GET'])
 def get_chain():
     response = {
@@ -68,15 +83,15 @@ def get_chain():
     }
     return jsonify(response), 200
 
-# Route to manually mine a block (optional for testing)
 @app.route('/mine_block', methods=['POST'])
 def mine_block():
     previous_block = blockchain.get_previous_block()
     previous_hash = previous_block['hash']
+    data = request.get_json()
     new_block = blockchain.create_block(
-        transactions=request.json['transactions'],
+        transactions=data['transactions'],
         previous_hash=previous_hash,
-        fees=request.json['fees']
+        fees=data['fees']
     )
     response = {
         'message': 'Block mined successfully',
@@ -84,9 +99,26 @@ def mine_block():
     }
     return jsonify(response), 201
 
-# Function to start the Flask server
+@app.route('/add_peer', methods=['POST'])
+def add_peer():
+    data = request.get_json()
+    peer = data['peer']
+    blockchain.add_peer(peer)
+    blockchain.sync_chain()
+    response = {
+        'message': f'Peer {peer} added successfully!',
+        'peers': list(blockchain.peers)
+    }
+    return jsonify(response), 201
+
+@app.route('/peers', methods=['GET'])
+def get_peers():
+    response = {
+        'peers': list(blockchain.peers)
+    }
+    return jsonify(response), 200
+
 if __name__ == '__main__':
-    from threading import Thread
     miner_thread = Thread(target=mine_automatically)
     miner_thread.daemon = True
     miner_thread.start()
